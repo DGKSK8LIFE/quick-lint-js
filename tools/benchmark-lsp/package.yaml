@@ -1,31 +1,37 @@
-#!/usr/bin/env bash
-
 # Copyright (C) 2020  Matthew Glazar
 # See end of file for extended copyright information.
 
-set -e
-set -o pipefail
-set -u
+name: benchmark-lsp
 
-cd "$(dirname "${0}")/.."
-source tools/files.sh
+author: Matthew "strager" Glazar
+copyright: Copyright (C) 2020  Matthew Glazar
+description: Measure speed of Language Server Protocol (LSP) servers
+license-file: ../../COPYING
+license: OtherLicense
+maintainer: strager.nds@gmail.com
+version: 0.1.0.0
 
-check_file_copyright_header() {
-  local file="${1}"
-  fgrep -q 'Copyright (C)' "${file}" && \
-    fgrep -q 'This file is part of quick-lint-js.' "${file}" && \
-    fgrep -q 'quick-lint-js finds bugs in JavaScript programs.' "${file}" && \
-    fgrep -q 'quick-lint-js is free software' "${file}"
-}
+dependencies:
+- base >= 4.7 && < 5
 
-error=0
-for file in $(find_non_vendor_files | matching '(\<CMakeLists\.txt|\.bt|\.c|\.cmake|\.cpp|\.go|\.gperf|\.h|\.html\|\.hs|\.js|\.mjs|\.nix|\.po|\.pot|\.py|\.sh|\.vim|\.yaml)$'); do
-  if ! check_file_copyright_header "${file}"; then
-    printf 'error: file missing copyright: %s\n' "${file}"
-    error=1
-  fi
-done
-exit "${error}"
+executables:
+  benchmark-lsp:
+    main: Main.hs
+    dependencies:
+    - aeson
+    - criterion
+    - criterion-measurement
+    - deepseq
+    - directory
+    - lens
+    - lsp-test
+    - lsp-types
+    - text
+    - unordered-containers
+    ghc-options:
+    - -threaded
+    - -rtsopts
+    - -with-rtsopts=-N
 
 # quick-lint-js finds bugs in JavaScript programs.
 # Copyright (C) 2020  Matthew Glazar
