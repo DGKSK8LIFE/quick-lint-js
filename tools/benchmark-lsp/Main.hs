@@ -70,28 +70,48 @@ main = do
     LSPClient.sendNotification LSP.STextDocumentDidOpen $ LSP.DidOpenTextDocumentParams
       $ LSP.TextDocumentItem (LSP.filePathToUri "/Users/strager/Projects/quick-lint-js/tools/benchmark-lsp/eslint/hello.js") "javascript" 0 "let x, x;"
 
-    fix $ \loop -> LSPClient.receiveMessage >>= \case
-        (LSPClient.matchNotification LSP.STextDocumentPublishDiagnostics -> Just diagnostics) -> liftIO $ print diagnostics
-        (matchMiscMessage -> Just handle) -> handle >> loop
+    waitForDiagnosticsOrTimeout (10*seconds) >>= \case
+      Just diagnostics -> liftIO $ print diagnostics
+      Nothing -> fail "Expected diagnostics but received none"
 
-    return ()
+    shutDownLSP
 -}
 
   ((), lspClient'') <- flip runStateT lspClient' $ do
     initializeLSP
 
+    let version = 0
+    let uri = LSP.filePathToUri "/Users/strager/Projects/quick-lint-js/tools/benchmark-lsp/flow/hello.js"
     LSPClient.sendNotification LSP.STextDocumentDidOpen $ LSP.DidOpenTextDocumentParams
-      $ LSP.TextDocumentItem (LSP.filePathToUri "/Users/strager/Projects/quick-lint-js/tools/benchmark-lsp/flow/hello.js") "javascript" 0 "let x, x;"
+      $ LSP.TextDocumentItem uri "javascript" version ""
 
-    fix $ \loop -> LSPClient.receiveMessage >>= \case
-        (LSPClient.matchNotification LSP.STextDocumentPublishDiagnostics -> Just diagnostics) -> liftIO $ print diagnostics
-        (matchMiscMessage -> Just handle) -> handle >> loop
+    let seconds = 10^6
+
+    waitForDiagnosticsOrTimeout (1*seconds) >>= \case
+      Just diagnostics -> liftIO $ print diagnostics
+      Nothing -> liftIO $ print "got no diags"
+
+    let version' = version + 1
+    LSPClient.sendNotification LSP.STextDocumentDidChange $ LSP.DidChangeTextDocumentParams
+      (LSP.VersionedTextDocumentIdentifier uri (Just version))
+      (LSP.List [LSP.TextDocumentContentChangeEvent Nothing Nothing "let x, x;"])
+
+    waitForDiagnosticsOrTimeout (10*seconds) >>= \case
+      Just diagnostics -> liftIO $ print diagnostics
+      Nothing -> fail "Expected diagnostics but received none"
 
     shutDownLSP
 
 
   Process.cleanupProcess lspServerProcess
   return ()
+
+waitForDiagnosticsOrTimeout :: Int -> StateT LSPClient.LSPClient IO (Maybe LSP.PublishDiagnosticsParams)
+waitForDiagnosticsOrTimeout timeoutMicroseconds
+  = fix $ \loop -> LSPClient.receiveMessageWithTimeout timeoutMicroseconds >>= \case
+        Just (LSPClient.matchNotification LSP.STextDocumentPublishDiagnostics -> Just parameters) -> return $ Just parameters
+        Just (matchMiscMessage -> Just handle) -> handle >> loop
+        Nothing -> return Nothing
 
 initializeLSP :: StateT LSPClient.LSPClient IO ()
 initializeLSP = do

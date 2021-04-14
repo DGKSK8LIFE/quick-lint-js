@@ -17,6 +17,7 @@
 
 module LSPClient where
 
+import qualified System.Timeout as Timeout
 import qualified Data.Type.Equality as Equality
 import qualified System.Console.ANSI as ANSI
 import Control.Monad.Trans.State.Strict
@@ -78,6 +79,17 @@ spawnLSPServer proc = do
       , Process.std_out = Process.CreatePipe
       } 
   return (makeLSPClient lspServerStdin lspServerStdout, lspServerProcess)
+
+-- @@@ this can corrupt parsing, 'cus we might have read a partial message.
+receiveMessageWithTimeout :: Int -> StateT LSPClient IO (Maybe LSP.FromServerMessage)
+receiveMessageWithTimeout timeoutMicroseconds = do
+  client <- get
+  maybeMessageAndClient <- liftIO $ Timeout.timeout timeoutMicroseconds $ runStateT receiveMessage client
+  case maybeMessageAndClient of
+    Just (message, client') -> do
+      put client'
+      return $ Just message
+    Nothing -> return Nothing
 
 receiveMessage :: StateT LSPClient IO LSP.FromServerMessage
 receiveMessage = do
