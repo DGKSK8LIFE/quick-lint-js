@@ -87,7 +87,7 @@ main = do
         (LSPClient.matchNotification LSP.STextDocumentPublishDiagnostics -> Just diagnostics) -> liftIO $ print diagnostics
         (matchMiscMessage -> Just handle) -> handle >> loop
 
-    return ()
+    shutDownLSP
 
 
   Process.cleanupProcess lspServerProcess
@@ -96,11 +96,22 @@ main = do
 initializeLSP :: StateT LSPClient.LSPClient IO ()
 initializeLSP = do
     let clientCapabilities = LSP.ClientCapabilities Nothing Nothing Nothing Nothing
-    initializeID <- LSPClient.sendRequest LSP.SInitialize $ LSP.InitializeParams Nothing Nothing Nothing Nothing Nothing Nothing clientCapabilities Nothing Nothing
+    -- Flow's LSP server requires rootPath.
+    -- @@@ don't hard-code
+    let rootPath = "/Users/strager/Projects/quick-lint-js/tools/benchmark-lsp/flow"
+    initializeID <- LSPClient.sendRequest LSP.SInitialize $ LSP.InitializeParams Nothing Nothing Nothing (Just rootPath) Nothing Nothing clientCapabilities Nothing Nothing
     fix $ \loop -> LSPClient.receiveMessage >>= \case
       (LSPClient.matchResponse LSP.SInitialize initializeID -> Just (Right _)) -> return ()
       (LSPClient.matchAnyNotification -> True) -> loop
     LSPClient.sendNotification LSP.SInitialized $ Just LSP.InitializedParams
+
+shutDownLSP :: StateT LSPClient.LSPClient IO () 
+shutDownLSP = do
+    shutdownID <- LSPClient.sendRequest LSP.SShutdown LSP.Empty
+    fix $ \loop -> LSPClient.receiveMessage >>= \case
+      (LSPClient.matchResponse LSP.SShutdown shutdownID -> Just (Right _)) -> return ()
+      (matchMiscMessage -> Just handle) -> handle >> loop
+    LSPClient.sendNotification LSP.SExit LSP.Empty
 
 matchMiscMessage
   :: LSP.FromServerMessage
