@@ -76,7 +76,6 @@ spawnLSPServer proc = do
     proc
       { Process.std_in = Process.CreatePipe
       , Process.std_out = Process.CreatePipe
-      , Process.std_err = Process.Inherit
       } 
   return (makeLSPClient lspServerStdin lspServerStdout, lspServerProcess)
 
@@ -139,6 +138,18 @@ matchNotification method message = case message of
               Just (Left _) -> Nothing
               Nothing -> Nothing
           _ -> Nothing
+
+matchAnyNotification
+  :: LSP.FromServerMessage 
+  -> Bool
+matchAnyNotification message = case message of
+      LSP.FromServerMess method message ->
+          case LSP.splitServerMethod method of
+            LSP.IsServerNot -> True
+            LSP.IsServerEither -> case message of
+              LSP.NotMess _ -> True
+              _ -> False
+      _ -> False
 
 sendRequest :: (Aeson.ToJSON (LSP.MessageParams m),
                   Aeson.FromJSON (LSP.SMethod m))

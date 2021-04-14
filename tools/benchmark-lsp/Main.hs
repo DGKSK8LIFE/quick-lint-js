@@ -4,6 +4,7 @@
 -- @@@ run hindent
 
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE ExplicitForAll #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
@@ -16,6 +17,7 @@
 
 module Main where
 
+import Data.Function (fix)
 import qualified Data.Type.Equality as Equality
 import qualified System.Console.ANSI as ANSI
 import Control.Monad.Trans.State.Strict
@@ -54,45 +56,69 @@ import qualified System.Process as Process
 main :: IO ()
 main = do
   (lspClient, lspServerProcess) <- LSPClient.spawnLSPServer
-    $ (Process.proc "node" ["./node_modules/eslint-server/lib/index.js", "--stdio"]) {Process.cwd = Just "eslint/"}
-    -- $ Process.proc "/Users/strager/Projects/quick-lint-js/build/quick-lint-js" ["--lsp-server"]
+    $ (Process.proc "/Users/strager/Projects/quick-lint-js/tools/benchmark-lsp/flow/./node_modules/.bin/flow" ["lsp"]) {Process.cwd = Just "flow/", Process.std_err = Process.Inherit}
+    -- $ (Process.proc "node" ["./node_modules/eslint-server/lib/index.js", "--stdio"]) {Process.cwd = Just "eslint/", Process.std_err = Process.Inherit}
+    -- $ (Process.proc "/Users/strager/Projects/quick-lint-js/build/quick-lint-js" ["--lsp-server"]) {Process.std_err = Process.Inherit}
 
   -- @@@ use cmd line arg for lspClientLogTraffic
   let lspClient' = lspClient { LSPClient.lspClientLogTraffic = Just stderr }
 
+{-
   ((), lspClient'') <- flip runStateT lspClient' $ do
-    let clientCapabilities = LSP.ClientCapabilities Nothing Nothing Nothing Nothing
-    initializeID <- LSPClient.sendRequest LSP.SInitialize $ LSP.InitializeParams Nothing Nothing Nothing Nothing Nothing Nothing clientCapabilities Nothing Nothing
-    Just (Right _initializeResponse) <- LSPClient.matchResponse LSP.SInitialize initializeID <$> LSPClient.receiveMessage
-    LSPClient.sendNotification LSP.SInitialized $ Just LSP.InitializedParams
+    initializeLSP
 
     LSPClient.sendNotification LSP.STextDocumentDidOpen $ LSP.DidOpenTextDocumentParams
       $ LSP.TextDocumentItem (LSP.filePathToUri "/Users/strager/Projects/quick-lint-js/tools/benchmark-lsp/eslint/hello.js") "javascript" 0 "let x, x;"
 
-    forever $ do
-      message <- LSPClient.receiveMessage
-      case message of
-        (LSPClient.matchResponse LSP.SInitialize initializeID -> Just (Right _initializeResponse)) -> liftIO $ print "omg"
+    fix $ \loop -> LSPClient.receiveMessage >>= \case
         (LSPClient.matchNotification LSP.STextDocumentPublishDiagnostics -> Just diagnostics) -> liftIO $ print diagnostics
-        (LSPClient.matchNotification LSP.SWindowLogMessage -> Just parameters) -> liftIO $ print parameters
-        (LSPClient.matchRequest LSP.SClientRegisterCapability -> Just (requestID, _request))
-          -> LSPClient.sendResponse requestID LSP.Empty
-        (LSPClient.matchRequest LSP.SWorkspaceConfiguration -> Just (requestID, request)) -> do
-                -- HACK(strager): eslint-server breaks if we don't give all of these options.
-                let (LSP.List requestedItems) = request ^. LSP.items
-                let configurations = map (\_item -> Aeson.Object $ HashMap.fromList
-                        -- For eslint-server:
-                        [ ("run", Aeson.String "onType")
-                        , ("validate", Aeson.String "probe")
-                        ]) requestedItems
-                LSPClient.sendResponse requestID (LSP.List configurations)
+        (matchMiscMessage -> Just handle) -> handle >> loop
 
-      return ()
+    return ()
+-}
+
+  ((), lspClient'') <- flip runStateT lspClient' $ do
+    initializeLSP
+
+    LSPClient.sendNotification LSP.STextDocumentDidOpen $ LSP.DidOpenTextDocumentParams
+      $ LSP.TextDocumentItem (LSP.filePathToUri "/Users/strager/Projects/quick-lint-js/tools/benchmark-lsp/flow/hello.js") "javascript" 0 "let x, x;"
+
+    fix $ \loop -> LSPClient.receiveMessage >>= \case
+        (LSPClient.matchNotification LSP.STextDocumentPublishDiagnostics -> Just diagnostics) -> liftIO $ print diagnostics
+        (matchMiscMessage -> Just handle) -> handle >> loop
+
+    return ()
 
 
   Process.cleanupProcess lspServerProcess
   return ()
 
+initializeLSP :: StateT LSPClient.LSPClient IO ()
+initializeLSP = do
+    let clientCapabilities = LSP.ClientCapabilities Nothing Nothing Nothing Nothing
+    initializeID <- LSPClient.sendRequest LSP.SInitialize $ LSP.InitializeParams Nothing Nothing Nothing Nothing Nothing Nothing clientCapabilities Nothing Nothing
+    fix $ \loop -> LSPClient.receiveMessage >>= \case
+      (LSPClient.matchResponse LSP.SInitialize initializeID -> Just (Right _)) -> return ()
+      (LSPClient.matchAnyNotification -> True) -> loop
+    LSPClient.sendNotification LSP.SInitialized $ Just LSP.InitializedParams
+
+matchMiscMessage
+  :: LSP.FromServerMessage
+  -> Maybe (StateT LSPClient.LSPClient IO ())
+matchMiscMessage = \case
+  (LSPClient.matchRequest LSP.SClientRegisterCapability -> Just (requestID, _request)) -> Just $ do
+    LSPClient.sendResponse requestID LSP.Empty
+  (LSPClient.matchRequest LSP.SWorkspaceConfiguration -> Just (requestID, request)) -> Just $ do
+          -- HACK(strager): eslint-server breaks if we don't give all of these options.
+          let (LSP.List requestedItems) = request ^. LSP.items
+          let configurations = map (\_item -> Aeson.Object $ HashMap.fromList
+                  -- For eslint-server:
+                  [ ("run", Aeson.String "onType")
+                  , ("validate", Aeson.String "probe")
+                  ]) requestedItems
+          LSPClient.sendResponse requestID (LSP.List configurations)
+  (LSPClient.matchAnyNotification -> True) -> Just $ return ()
+  _ -> Nothing
 
 {-
 main :: IO ()
@@ -297,7 +323,7 @@ stopLSPServer server = killThread (lspServerThreadID server)
 
 withLSP :: (Typeable a) => LSPServer -> LSP.Session a -> IO a
 withLSP server work = do
-  let work' = (toDyn <$> work) :: LSP.Session Dynamic 
+  let work' = (toDyn <$> work) :: LSP.Session Dynamic
   putMVar (lspServerWorkMVar server) work'
   workResult <- takeMVar (lspServerWorkDoneMVar server) :: IO (Either Exception.SomeException Dynamic)
   case workResult of
