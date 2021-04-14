@@ -6,6 +6,7 @@ name: benchmark-lsp
 author: Matthew "strager" Glazar
 copyright: Copyright (C) 2020  Matthew Glazar
 description: Measure speed of Language Server Protocol (LSP) servers
+# @@@ multi-license (including BSD3)
 license-file: ../../COPYING
 license: OtherLicense
 maintainer: strager.nds@gmail.com
@@ -17,8 +18,13 @@ dependencies:
 executables:
   benchmark-lsp:
     main: Main.hs
+    other-modules:
+    - LSPClient
+    - LSPDecode
     dependencies:
     - aeson
+    - ansi-terminal
+    - bytestring
     - criterion
     - criterion-measurement
     - deepseq
@@ -26,7 +32,9 @@ executables:
     - lens
     - lsp-test
     - lsp-types
+    - process
     - text
+    - transformers
     - unordered-containers
     ghc-options:
     - -threaded

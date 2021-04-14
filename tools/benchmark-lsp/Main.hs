@@ -3,17 +3,26 @@
 
 -- @@@ run hindent
 
+{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE ExplicitForAll #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PolyKinds #-}
 {-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE ViewPatterns #-}
 
 module Main where
 
+import qualified Data.Type.Equality as Equality
+import qualified System.Console.ANSI as ANSI
+import Control.Monad.Trans.State.Strict
+import qualified LSPDecode as LSP
 import Control.Applicative
 import Control.Concurrent (ThreadId, forkIO, killThread)
+import qualified LSPClient
 import Control.Concurrent.MVar (MVar, newEmptyMVar, putMVar, takeMVar, tryPutMVar)
 import Control.DeepSeq (NFData(rnf))
 import Control.Lens ((^.))
@@ -21,7 +30,7 @@ import Control.Monad (forever, forM, forM_, mapM_, void)
 import Control.Monad.IO.Class
 import Data.Dynamic (Dynamic, Typeable, fromDyn, toDyn)
 import Data.Int (Int64)
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromJust, fromMaybe)
 import GHC.Generics (Generic)
 import System.Directory (withCurrentDirectory)
 import System.Exit (exitFailure)
@@ -32,13 +41,60 @@ import qualified Criterion.Main as Criterion
 import qualified Criterion.Measurement as Criterion
 import qualified Criterion.Measurement.Types as Criterion
 import qualified Data.Aeson as Aeson
+import qualified Data.ByteString.Lazy.Char8    as BS
+import qualified System.IO as IO
 import qualified Data.HashMap.Strict as HashMap
 import qualified Data.Text as Text
 import qualified Language.LSP.Test as LSP
 import qualified Language.LSP.Types as LSP
 import qualified Language.LSP.Types.Capabilities as LSP
 import qualified Language.LSP.Types.Lens as LSP hiding (message)
+import qualified System.Process as Process
 
+main :: IO ()
+main = do
+  (lspClient, lspServerProcess) <- LSPClient.spawnLSPServer
+    $ (Process.proc "node" ["./node_modules/eslint-server/lib/index.js", "--stdio"]) {Process.cwd = Just "eslint/"}
+    -- $ Process.proc "/Users/strager/Projects/quick-lint-js/build/quick-lint-js" ["--lsp-server"]
+
+  -- @@@ use cmd line arg for lspClientLogTraffic
+  let lspClient' = lspClient { LSPClient.lspClientLogTraffic = Just stderr }
+
+  ((), lspClient'') <- flip runStateT lspClient' $ do
+    let clientCapabilities = LSP.ClientCapabilities Nothing Nothing Nothing Nothing
+    initializeID <- LSPClient.sendRequest LSP.SInitialize $ LSP.InitializeParams Nothing Nothing Nothing Nothing Nothing Nothing clientCapabilities Nothing Nothing
+    Just (Right _initializeResponse) <- LSPClient.matchResponse LSP.SInitialize initializeID <$> LSPClient.receiveMessage
+    LSPClient.sendNotification LSP.SInitialized $ Just LSP.InitializedParams
+
+    LSPClient.sendNotification LSP.STextDocumentDidOpen $ LSP.DidOpenTextDocumentParams
+      $ LSP.TextDocumentItem (LSP.filePathToUri "/Users/strager/Projects/quick-lint-js/tools/benchmark-lsp/eslint/hello.js") "javascript" 0 "let x, x;"
+
+    forever $ do
+      message <- LSPClient.receiveMessage
+      case message of
+        (LSPClient.matchResponse LSP.SInitialize initializeID -> Just (Right _initializeResponse)) -> liftIO $ print "omg"
+        (LSPClient.matchNotification LSP.STextDocumentPublishDiagnostics -> Just diagnostics) -> liftIO $ print diagnostics
+        (LSPClient.matchNotification LSP.SWindowLogMessage -> Just parameters) -> liftIO $ print parameters
+        (LSPClient.matchRequest LSP.SClientRegisterCapability -> Just (requestID, _request))
+          -> LSPClient.sendResponse requestID LSP.Empty
+        (LSPClient.matchRequest LSP.SWorkspaceConfiguration -> Just (requestID, request)) -> do
+                -- HACK(strager): eslint-server breaks if we don't give all of these options.
+                let (LSP.List requestedItems) = request ^. LSP.items
+                let configurations = map (\_item -> Aeson.Object $ HashMap.fromList
+                        -- For eslint-server:
+                        [ ("run", Aeson.String "onType")
+                        , ("validate", Aeson.String "probe")
+                        ]) requestedItems
+                LSPClient.sendResponse requestID (LSP.List configurations)
+
+      return ()
+
+
+  Process.cleanupProcess lspServerProcess
+  return ()
+
+
+{-
 main :: IO ()
 main = do
   benchmarkConfigOrError <- Aeson.eitherDecodeFileStrict "benchmark-config.json" :: IO (Either String BenchmarkConfig)
@@ -81,13 +137,15 @@ benchmarkLSPServer serverConfig@BenchmarkConfigServer{..} = Criterion.bgroup ben
         setUp batchSize = do
           documents <- forM [1..batchSize] $ \i -> do
             document <- LSP.createDoc ("hello" <> show i <> ".js") "javascript" initialSource
+            liftIO $ putStrLn "yo"
             deadline <- lspBeginTimeout 0.5
+            liftIO $ putStrLn "yo2"
             let go
                   = void lspGetDiagnostics
                   <|> (lspRespondToRegisterCapabilityRequest *> go)
                   <|> (lspRespondToWorkspaceConfigurationRequest *> go)
                   <|> (void LSP.anyNotification *> go)
-                  <|> lspPollTimeout deadline
+                  <|> (lspPollTimeout deadline *> go)
             go
             return document
           return documents
@@ -109,12 +167,15 @@ benchmarkLSPServer serverConfig@BenchmarkConfigServer{..} = Criterion.bgroup ben
 
 lspGetDiagnostics :: LSP.Session [LSP.Diagnostic]
 lspGetDiagnostics = do
+  liftIO $ putStrLn "gonna lspGetDiagnostics"
   notification <- LSP.message LSP.STextDocumentPublishDiagnostics
+  liftIO $ putStrLn "got lspGetDiagnostics"
   let (LSP.List diagnostics) = notification ^. LSP.params . LSP.diagnostics
   return diagnostics
 
 lspRespondToRegisterCapabilityRequest :: LSP.Session ()
 lspRespondToRegisterCapabilityRequest = do
+  liftIO $ putStrLn "gonna lspRespondToRegisterCapabilityRequest"
   request <- LSP.message LSP.SClientRegisterCapability
   -- HACK(strager): We should respond with MethodNotFound, but eslint-server
   -- breaks if we don't give a successful response.
@@ -200,7 +261,9 @@ lspPollTimeout deadline = do
   else do
     liftIO $ putStrLn "poll"
     liftIO $ Concurrent.threadDelay 10
+    liftIO $ putStrLn "polldone"
     empty
+    liftIO $ putStrLn "!!! after empty"
 
 -- | Start an LSP server in another thread.
 startLSPServer :: String -> FilePath -> IO LSPServer
@@ -211,7 +274,8 @@ startLSPServer command serverCWD = do
 
   withCurrentDirectory serverCWD $ do
     let clientCapabilities = LSP.ClientCapabilities Nothing Nothing Nothing Nothing
-    let threadRoutine = LSP.runSession command clientCapabilities "." $ do
+    let sessionConfig = LSP.defaultConfig { LSP.messageTimeout = 5 } -- @@@ 5
+    let threadRoutine = LSP.runSessionWithConfig sessionConfig command clientCapabilities "." $ do
           liftIO $ putMVar serverReady Nothing
           forever $ do
             work <- liftIO $ takeMVar workMVar
@@ -249,6 +313,7 @@ data LSPServer = LSPServer
 
 instance NFData LSP.TextDocumentIdentifier where
   rnf x = rnf (x ^. LSP.uri)
+-}
 
 -- quick-lint-js finds bugs in JavaScript programs.
 -- Copyright (C) 2020  Matthew Glazar
